@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+
+"""\
+./trace_viz: A system and library call tracer
+Usage: ./trace_viz -s/l -b <binary> [-p] [-a <PID>] [-i <logfile>] [-c]
+Option:
+    -b, --binary
+        Binary for which to trace library or system calls
+    -s, --system
+        Trace system calls made by the specified binary
+    -l, --library
+        Trace library calls made by the specified binary
+    -a, --attach_process
+        Attach to process with specified PID
+    -i --input_log
+        Give a strace/ltrace logfile generated with -tt and -T options to parse its output 
+    -c --child_trace
+        Trace system/library calls made by child processes, disabled by default
+    -p, --plot
+        Plot a graph of number of successful and error system calls, limited usage
+        Use with options: -s -b
+    -h, --help
+        Print this help.
+Requirements: python3
+"""
+
+import sys, getopt, datetime, re, os
+import numpy as np
+from os import system
+
+filename = "trace.tmp"
+sys_calls = False
+lib_calls = False
+command = ""            ##stores the command to run ltrace/strace
+binary = ""             ##if scanning a binary stores the name
+
+log = False             ##specifies if logfile is given as input
+
+attach = False          ##specifies if trace_viz needs to attach to a pid
+pid = ""
+
+child = False           ##specifies whether to trace child process calls or not
+
+plot = False            ##specifies whether to plot the result
+
+debugging = False       ##for programmer: True if debug messages are required
+
+try:
+	opts, args = getopt.gnu_getopt(sys.argv[1:], 'i:b:a:slpch', ('input_log=','binary=','attach_process=','system','library','plot','child','help'))
+except getopt.GetoptError as e:
+    sys.stderr.write("ERROR: %s\n\n" % e)
+    sys.stdout.write(__doc__)
+    sys.exit(1)
+if debugging:
+    print(opts)
+
+#parsing otions recieved from user
+for opt, optarg in opts:
+    if opt in ('-l', '--library'):
+        sys_calls = False
+        lib_calls = True
+        command = "ltrace"
+    
+    elif opt in ('-s', '--system'):
+        sys_calls = True
+        lib_calls = False
+        command = "strace"
+
+    elif opt in ('-b', '--binary'):
+        binary = optarg
+
+    elif opt in ('-a', '--attach_process'):
+        attach = True
+        pid = optarg
+
+    elif opt in ('-p', '--plot'):
+        plot = True
+
+    elif opt in ('-c', '--child'):
+        child = True
+
+    elif opt in ('-i', '--input_log'):
+        log = True
+        filename = optarg
+        break
+        
+    elif opt in ('-h', '--help'):
+        sys.stdout.write(__doc__)
+        sys.exit(0)
+
+if debugging:
+    print(command)
+
+#if no options are specified
+if len(opts)==0:
+    sys.stdout.write(__doc__)
+    sys.exit(0)
+
+#if user sets options -i and -b
+if ((attach and len(binary)>0) or (not attach and len(binary)==0)) and not log:
+    sys.stdout.write("ERROR: Specify either binary or process ID to attach or input a logfile\n\n")
+    sys.stdout.write(__doc__)
+    sys.exit(1)
+
+#if no input log is provided and strace or ltrace is not specified
+if len(command)==0 and not log:
+    sys.stdout.write("ERROR: Specify either system or library calls to trace\n\n")
+    sys.stdout.write(__doc__)
+    sys.exit(1)
+
+#when giving a log as input no other options should be specified
+if log and len(opts)>1:
+    sys.stdout.write("ERROR: When providing a log file disable other options\n\n")
+    sys.stdout.write(__doc__)
+    sys.exit(1)
+
+#creating the command to be executed on shell
+exec_cmd = str(command) + " -o " + filename + " -tt -T " 
+if child:
+    exec_cmd += "-f "
+if attach:
+    exec_cmd += "-p " + str(pid)
+else:
+    exec_cmd += str(binary)
+if debugging:
+    print(exec_cmd)
+
+"""
+plan on calling a single call with -C
+instead of 2 calls to strace, with 2nf call with -c option
+"""
+if not log:
+    try:
+        system(exec_cmd)       
+    except TypeError as e:
+        sys.stderr.write("Error: Check binary name or process id\n\n")
+
+#regex to parse lines in traced output
+##https://github.com/jabrcx/stracestats/blob/master/bin/stracestats
+regex = re.compile(r'((\[pid +\d+\]|\d+) +)?([\d:\.]+) ([^\(]+)(\(.*\)) += (.+) <([\d\.]+)>')
+
+#if file created successfully with some content
+if os.stat(filename).st_size != 0:
+    f = open(filename)
+else:
+    sys.stdout.write("ERROR: Execution Unsuccessful, check binary name/pid\n\n")
+    sys.stdout.write(__doc__)
+    sys.exit(1)
+
+#parsing
+calls = {}
+for line in f.readlines():
+    line = line.strip()	
+
+    if debugging:
+        print(line)
+
+    match = regex.match(line)
+    
+    #skips messages and signals printed by strace and ltrace
+    if not match:
+        if not (line.startswith('Process ') or line.endswith('...>') or line.endswith('= ?') or '--- SIG' in line or '+++ exited with' in line):
+            sys.stderr.write("WARNING: unable to parse line, skipping: %s\n" % line)
+        continue
+
+    if debugging:
+	    print('\t%s' % (match.groups(None),))
+       
+    call = match.groups(None)[3]                ##4th entry for library/system call name    #0 based indexing
+    
+    try:
+	    total_time = float(match.groups(None)[6])        ##7th entry for total time taken
+    except ValueError:
+	    sys.stderr.write("WARNING: unable to parse time, assuming 0.0s: %s\n" % line)
+	    total_time = 0.0
+
+    try:
+	    data = calls[call]
+    #if key doesn't already exists
+    except KeyError:
+        #if time not parsed correctly store as []
+	    data = {'time_taken':[],}
+	    calls[call] = data
+
+    data['time_taken'].append(total_time)
+
+summary = []
+
+#for calculating percentages
+total_calls = 0
+total_call_time = 0.0
+
+spaces = 0.0
+
+#storing
+for call, data in calls.items():
+	store_dict = {}
+	store_dict['name'] = call
+	store_dict['times_called'] = len(data['time_taken'])
+	total_calls += store_dict['times_called']
+
+	store_dict['total_time_taken'] = np.sum(data['time_taken'])
+	total_call_time += store_dict['total_time_taken']
+
+	store_dict['average'] = np.average(data['time_taken'])
+	store_dict['std_dev'] = np.std(data['time_taken'])
+	store_dict['min_time'] = np.min(data['time_taken'])
+	store_dict['max_time'] = np.max(data['time_taken'])
+
+	spaces = max(spaces, store_dict['total_time_taken'])
+
+	summary.append(store_dict)
+
+spacing = len(str(int(spaces))) + 7
+
+summary = sorted(summary, key = lambda x: x['times_called'])
+
+if log:
+    call_type = ''
+elif sys_calls:
+    call_type = 'system'
+else:
+    call_type = 'library'
+
+#printing
+for store_dict in summary:
+	print('\n%s' % store_dict['name'])
+	print('\t%22s: %*d  %2d%% of %s calls' % ('# of times called', spacing, store_dict['times_called'], 
+                        int(round(float(store_dict['times_called'])/total_calls*100)), call_type))
+	print('\t%22s: %*.6f  %2d%% of total %s call time' % ('Total time taken in(s)', spacing, store_dict['total_time_taken'], 
+                        int(round(store_dict['total_time_taken']/total_call_time*100)), call_type))
+	print('\t%22s: %*.6f' % ('Average time taken', spacing, store_dict['average']))
+	print('\t%22s: %*.6f' % ('Standard Deviation', spacing, store_dict['std_dev']))
+	print('\t%22s: %*.6f %*.6f' % ('min/max times', spacing, store_dict['min_time'], spacing, store_dict['max_time']))
+
+print()
+
+#plotting
+def autolabel(rects):
+    """Attach a text label above each bar in *rects*, displaying its height."""
+    for rect in rects:
+        height = rect.get_height()
+        ax.annotate('{}'.format(height),
+                    xy=(rect.get_x() + rect.get_width() / 2, height),
+                    xytext=(0, 3),  # 3 points vertical offset
+                    textcoords="offset points",
+                    ha='center', va='bottom')
+
+if plot:
+    import matplotlib.pyplot as plt
+    if lib_calls or child or log or attach:
+        sys.stdout.write("\nWarning: Disabling Plotting(Refer Usage)\n\n")
+        plot = False
+    else:
+        cmd = "strace -c -o trace_c.tmp " + str(binary)
+        system(cmd)
+
+        if os.stat("trace_c.tmp").st_size != 0:
+            f = open("trace_c.tmp")
+        else:
+            sys.stdout.write("ERROR: Execution Unsuccessful, check binary name/pid\n\n")
+            sys.stdout.write(__doc__)
+            sys.exit(1)
+
+        lines = f.readlines()       
+        lines = lines[2:-2]             ##first and last 2 lines not useful
+
+        labels = []
+        total_calls = []
+        errors = []
+
+        for line in lines:
+            line = line.split()
+            if len(line) == 6:
+                labels.append(line[5])
+                total_calls.append(int(line[3]))
+                errors.append(int(line[4]))
+
+        if debugging:
+            print(errors)
+            print(total_calls)
+            print(labels)
+
+        x = np.arange(len(labels))      ##the label locations
+        width = 0.35                    ##the width of the bars
+
+        fig, ax = plt.subplots()
+        rects1 = ax.bar(x - width/2, total_calls, width, label='Calls')
+        rects2 = ax.bar(x + width/2, errors, width, label='Errors')
+
+        ax.set_ylabel('#')
+        ax.set_title('Total number of system calls vs errors for \"' + str(binary) + '\"')
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels)
+        ax.legend()
+
+        autolabel(rects1)
+        autolabel(rects2)
+
+        fig.tight_layout()
+        plt.show()
+        
+if not log:
+    system('rm ' + filename)
+
+if plot:
+    system('rm trace_c.tmp')
