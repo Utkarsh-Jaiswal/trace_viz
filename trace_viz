@@ -68,10 +68,16 @@ for opt, optarg in opts:
 
     elif opt in ('-b', '--binary'):
         binary = optarg
+        if ';' in binary:
+            sys.stdout.write("Error: Invalid character found\n")
+            sys.exit(1)
 
     elif opt in ('-a', '--attach_process'):
         attach = True
         pid = optarg
+        if ';' in pid:
+            sys.stdout.write("Error: Invalid character found\n")
+            sys.exit(1)
 
     elif opt in ('-p', '--plot'):
         plot = True
@@ -82,6 +88,9 @@ for opt, optarg in opts:
     elif opt in ('-i', '--input_log'):
         log = True
         filename = optarg
+        if ';' in filename:
+            sys.stdout.write("Error: Invalid character found\n")
+            sys.exit(1)
         break
         
     elif opt in ('-h', '--help'):
