@@ -1,5 +1,17 @@
 # trace_viz
-Tool to visualize outputs of strace and ltrace\
+Tool to visualize system and library calls made by a binary.
+
+## Motivation
+Outputs of strace and ltrace are a bunch of unformatted lines that don't provide much insight to the programs behavior. While using "-c" option provides a better output but is very inconsistent.\
+The code is a wrapper around strace and ltrace to trace system and library calls and output a clean and formatted result to provide a better understanding of a programs functionality. 
+
+## Bugs and Improvements
+Issue: when specifying --plot option the binary is executed twice.\
+Solution: can be resolved by wrapping around "strace -C" instead of calling "strace" and "strace -c" separately.
+
+Currently output is sorted by number of calls, may add a feature to sortby other elements.
+
+Currently using dictionaries to parse data, a better use would using pandas dataframes.
 
 <pre>
 ./trace_viz: A system and library call tracer
@@ -24,3 +36,4 @@ Option:
         Print this help.
 Requirements: python3
 </pre>
+
